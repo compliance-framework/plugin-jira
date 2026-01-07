@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 
@@ -17,7 +18,6 @@ import (
 	"github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/mitchellh/mapstructure"
-	"golang.org/x/oauth2/clientcredentials"
 )
 
 type Validator interface {
@@ -110,13 +110,10 @@ type JiraPlugin struct {
 
 func (l *JiraPlugin) initClient(ctx context.Context) error {
 	if l.parsedConfig.AuthType == "oauth2" {
-		conf := &clientcredentials.Config{
-			ClientID:     l.parsedConfig.ClientID,
-			ClientSecret: l.parsedConfig.ClientSecret,
-			TokenURL:     l.parsedConfig.BaseURL + "/rest/api/3/oauth2/token", // This might need to be configurable
-		}
-		l.client = conf.Client(ctx)
+		l.Logger.Debug("Initializing Jira client with OAuth2")
+		l.client = jira.NewOAuth2Client(l.parsedConfig.ClientID, l.parsedConfig.ClientSecret, l.parsedConfig.BaseURL, l.Logger)
 	} else {
+		l.Logger.Debug("Initializing Jira client with Token")
 		// Token auth
 		l.client = jira.NewTokenAuthClient(l.parsedConfig.UserEmail, l.parsedConfig.APIToken)
 	}
@@ -131,6 +128,7 @@ func (l *JiraPlugin) Configure(req *proto.ConfigureRequest) (*proto.ConfigureRes
 		l.Logger.Error("Error decoding config", "error", err)
 		return nil, err
 	}
+	l.Logger.Debug("configuration decoded", "config", config)
 
 	if err := config.Validate(); err != nil {
 		l.Logger.Error("Error validating config", "error", err)
@@ -157,9 +155,15 @@ func (l *JiraPlugin) Eval(req *proto.EvalRequest, apiHelper runner.ApiHelper) (*
 		return nil, err
 	}
 
-	client := jira.NewClient(l.parsedConfig.BaseURL, l.client, l.Logger)
+	client, err := jira.NewClient(l.parsedConfig.BaseURL, l.client, l.Logger)
+	if err != nil {
+		l.Logger.Error("Error creating JIRA client", "error", err)
+		return nil, err
+	}
 
 	jiraData, err := l.collectData(ctx, client)
+	indentedJSON, _ := json.MarshalIndent(jiraData, "", "  ")
+	os.WriteFile("/data/jira_data.json", indentedJSON, 0o644)
 	if err != nil {
 		l.Logger.Error("Error collecting Jira data", "error", err)
 		return &proto.EvalResponse{
@@ -181,7 +185,6 @@ func (l *JiraPlugin) Eval(req *proto.EvalRequest, apiHelper runner.ApiHelper) (*
 			Status: proto.ExecutionStatus_FAILURE,
 		}, err
 	}
-
 	return &proto.EvalResponse{
 		Status: proto.ExecutionStatus_SUCCESS,
 	}, nil
@@ -244,15 +247,8 @@ func (l *JiraPlugin) collectData(ctx context.Context, client *jira.Client) (*jir
 		data.Projects = projects
 	}
 
-	// 3. Fetch Project-specific details
-	for i, p := range data.Projects {
-		remoteLinks, err := client.FetchProjectRemoteLinks(ctx, p.Key)
-		if err != nil {
-			l.Logger.Warn("failed to fetch remote links for project", "project", p.Key, "error", err)
-		} else {
-			data.Projects[i].RemoteLinks = remoteLinks
-		}
-	}
+	// 3. Projects are already fetched with all available details
+	l.Logger.Debug("Project details fetched", "count", len(data.Projects))
 
 	// 4. Search for Change Request issues
 	issues, err := client.SearchChangeRequests(ctx)
@@ -260,9 +256,9 @@ func (l *JiraPlugin) collectData(ctx context.Context, client *jira.Client) (*jir
 		return nil, fmt.Errorf("failed to search issues: %w", err)
 	}
 	data.Issues = issues
-
 	// 5. Fetch Details, Changelog, Approvals, SLAs, DevInfo, and Deployments for each issue
 	for i, issue := range data.Issues {
+		l.Logger.Info("Fetching details for issue", "issue", issue.Key)
 		changelog, err := client.FetchIssueChangelog(ctx, issue.Key)
 		if err != nil {
 			l.Logger.Warn("failed to fetch changelog for issue", "issue", issue.Key, "error", err)
@@ -298,7 +294,6 @@ func (l *JiraPlugin) collectData(ctx context.Context, client *jira.Client) (*jir
 			data.Issues[i].Deployments = deployments
 		}
 	}
-
 	return data, nil
 }
 

@@ -1,3 +1,5 @@
+bin/
+data/
 .idea/
 dist/
 .DS_Store
