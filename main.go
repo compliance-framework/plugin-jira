@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	policyManager "github.com/compliance-framework/agent/policy-manager"
@@ -225,6 +226,11 @@ func (l *JiraPlugin) collectData(ctx context.Context, client *jira.Client) (*jir
 		l.Logger.Warn("failed to fetch global permissions", "error", err)
 	}
 
+	data.Statuses, err = client.GetAllStatuses(ctx)
+	if err != nil {
+		l.Logger.Warn("failed to fetch statuses", "error", err)
+	}
+
 	// 2. Fetch Projects
 	projects, err := client.FetchProjects(ctx)
 	if err != nil {
@@ -249,6 +255,26 @@ func (l *JiraPlugin) collectData(ctx context.Context, client *jira.Client) (*jir
 
 	// 3. Projects are already fetched with all available details
 	l.Logger.Debug("Project details fetched", "count", len(data.Projects))
+
+	// Fetch workflow scheme project associations for all projects
+	if len(data.Projects) > 0 {
+		projectIds := make([]int64, 0, len(data.Projects))
+		for _, project := range data.Projects {
+			if project.ID != "" {
+				// Convert string ID to int64
+				if id, err := strconv.ParseInt(project.ID, 10, 64); err == nil {
+					projectIds = append(projectIds, id)
+				}
+			}
+		}
+
+		if len(projectIds) > 0 {
+			data.WorkflowSchemeProjectAssociations, err = client.GetWorkflowSchemeProjectAssociations(ctx, projectIds)
+			if err != nil {
+				l.Logger.Warn("failed to fetch workflow scheme project associations", "error", err)
+			}
+		}
+	}
 
 	// 4. Search for Change Request issues
 	issues, err := client.SearchChangeRequests(ctx)

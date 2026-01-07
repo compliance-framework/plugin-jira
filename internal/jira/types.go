@@ -42,14 +42,16 @@ func (jat JiraAuditTime) ToTime() time.Time {
 }
 
 type JiraData struct {
-	Projects          []JiraProject        `json:"projects"`
-	Issues            []JiraIssue          `json:"issues"`
-	Workflows         []JiraWorkflow       `json:"workflows"`
-	WorkflowSchemes   []JiraWorkflowScheme `json:"workflow_schemes"`
-	IssueTypes        []JiraIssueType      `json:"issue_types"`
-	Fields            []JiraField          `json:"fields"`
-	AuditRecords      []JiraAuditRecord    `json:"audit_records"`
-	GlobalPermissions []JiraPermission     `json:"global_permissions"`
+	Projects                          []JiraProject                          `json:"projects"`
+	Issues                            []JiraIssue                            `json:"issues"`
+	Workflows                         []JiraWorkflow                         `json:"workflows"`
+	WorkflowSchemes                   []JiraWorkflowScheme                   `json:"workflow_schemes"`
+	WorkflowSchemeProjectAssociations []JiraWorkflowSchemeProjectAssociation `json:"workflow_scheme_project_associations"`
+	IssueTypes                        []JiraIssueType                        `json:"issue_types"`
+	Fields                            []JiraField                            `json:"fields"`
+	AuditRecords                      []JiraAuditRecord                      `json:"audit_records"`
+	GlobalPermissions                 []JiraPermission                       `json:"global_permissions"`
+	Statuses                          []JiraStatus                           `json:"statuses"`
 }
 
 type JiraProject struct {
@@ -123,6 +125,12 @@ type JiraWorkflow struct {
 	Statuses         []JiraWorkflowStatus     `json:"statuses,omitempty"`
 	Transitions      []JiraWorkflowTransition `json:"transitions,omitempty"`
 	Version          JiraWorkflowVersion      `json:"version,omitempty"`
+	// Additional fields from official API - use strings for timestamps
+	Created       string `json:"created,omitempty"`
+	Modified      string `json:"modified,omitempty"`
+	DefaultStatus string `json:"defaultStatus,omitempty"`
+	Published     bool   `json:"published,omitempty"`
+	WorkflowOwner string `json:"workflowOwner,omitempty"`
 }
 
 type JiraWorkflowSearchResponse struct {
@@ -147,23 +155,39 @@ type JiraLayout struct {
 }
 
 type JiraWorkflowStatus struct {
-	Deprecated      bool                   `json:"deprecated,omitempty"`
-	Layout          JiraLayout             `json:"layout,omitempty"`
-	Properties      map[string]interface{} `json:"properties,omitempty"`
-	StatusReference string                 `json:"statusReference"`
+	ID                    string                     `json:"id"`
+	Name                  string                     `json:"name"`
+	Description           string                     `json:"description,omitempty"`
+	Scope                 JiraScope                  `json:"scope"`
+	StatusCategory        string                     `json:"statusCategory,omitempty"`
+	StatusReference       string                     `json:"statusReference"`
+	Deprecated            bool                       `json:"deprecated,omitempty"`
+	Layout                JiraLayout                 `json:"layout,omitempty"`
+	Properties            map[string]interface{}     `json:"properties,omitempty"`
+	ApprovalConfiguration *JiraApprovalConfiguration `json:"approvalConfiguration,omitempty"`
+}
+
+type JiraApprovalConfiguration struct {
+	Approvals []JiraApprovalStatus `json:"approvals,omitempty"`
+}
+
+type JiraApprovalStatus struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 type JiraWorkflowTransition struct {
-	ID                string                 `json:"id"`
-	Name              string                 `json:"name"`
-	Description       string                 `json:"description,omitempty"`
-	ToStatusReference string                 `json:"toStatusReference,omitempty"`
-	Type              string                 `json:"type"`
-	Actions           []interface{}          `json:"actions,omitempty"`
-	Links             []JiraTransitionLink   `json:"links,omitempty"`
-	Properties        map[string]interface{} `json:"properties,omitempty"`
-	Triggers          []interface{}          `json:"triggers,omitempty"`
-	Validators        []interface{}          `json:"validators,omitempty"`
+	ID                string                  `json:"id"`
+	Name              string                  `json:"name"`
+	Description       string                  `json:"description,omitempty"`
+	ToStatusReference string                  `json:"toStatusReference,omitempty"`
+	Type              string                  `json:"type"`
+	Actions           []JiraWorkflowRule      `json:"actions,omitempty"`
+	Links             []JiraTransitionLink    `json:"links,omitempty"`
+	Properties        map[string]interface{}  `json:"properties,omitempty"`
+	Triggers          []JiraWorkflowTrigger   `json:"triggers,omitempty"`
+	Validators        []JiraWorkflowValidator `json:"validators,omitempty"`
 }
 
 type JiraTransitionLink struct {
@@ -177,6 +201,38 @@ type JiraWorkflowVersion struct {
 	VersionNumber int    `json:"versionNumber"`
 }
 
+type JiraWorkflowTimestamp struct {
+	Timestamp int64  `json:"timestamp,omitempty"`
+	Format    string `json:"format,omitempty"`
+}
+
+type JiraWorkflowRule struct {
+	RuleKey     string                 `json:"ruleKey"`
+	RuleType    string                 `json:"ruleType"`
+	Name        string                 `json:"name,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	Config      map[string]interface{} `json:"config,omitempty"`
+}
+
+type JiraWorkflowTrigger struct {
+	RuleKey     string                 `json:"ruleKey"`
+	RuleType    string                 `json:"ruleType"`
+	Name        string                 `json:"name,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	Type        string                 `json:"type,omitempty"`
+	Config      map[string]interface{} `json:"config,omitempty"`
+}
+
+type JiraWorkflowValidator struct {
+	RuleKey      string                 `json:"ruleKey"`
+	RuleType     string                 `json:"ruleType"`
+	Name         string                 `json:"name,omitempty"`
+	Description  string                 `json:"description,omitempty"`
+	Expression   string                 `json:"expression,omitempty"`
+	ErrorMessage string                 `json:"errorMessage,omitempty"`
+	Config       map[string]interface{} `json:"config,omitempty"`
+}
+
 type JiraStatus struct {
 	ID              string    `json:"id"`
 	Name            string    `json:"name"`
@@ -184,6 +240,28 @@ type JiraStatus struct {
 	Scope           JiraScope `json:"scope"`
 	StatusCategory  string    `json:"statusCategory,omitempty"`
 	StatusReference string    `json:"statusReference,omitempty"`
+	// Additional fields from API
+	IconUrl string `json:"iconUrl,omitempty"`
+	Self    string `json:"self,omitempty"`
+}
+
+type JiraStatusSearchResponse struct {
+	IsLast     bool         `json:"isLast"`
+	MaxResults int          `json:"maxResults"`
+	NextPage   string       `json:"nextPage,omitempty"`
+	Self       string       `json:"self"`
+	StartAt    int          `json:"startAt"`
+	Total      int          `json:"total"`
+	Values     []JiraStatus `json:"values"`
+}
+
+type JiraWorkflowSchemeProjectAssociation struct {
+	ProjectIds     []string           `json:"projectIds"`
+	WorkflowScheme JiraWorkflowScheme `json:"workflowScheme"`
+}
+
+type JiraWorkflowSchemeProjectAssociationsResponse struct {
+	Values []JiraWorkflowSchemeProjectAssociation `json:"values"`
 }
 
 // JiraTransition kept for backward compatibility
@@ -294,17 +372,51 @@ type JiraRemoteLink struct {
 }
 
 type JiraAuditRecord struct {
-	ID         int64         `json:"id"`
-	Summary    string        `json:"summary"`
-	Created    JiraAuditTime `json:"created"`
-	AuthorName string        `json:"authorName"`
-	Category   string        `json:"category"`
+	ID              int64                     `json:"id"`
+	Summary         string                    `json:"summary"`
+	Created         JiraAuditTime             `json:"created"`
+	AuthorAccountId string                    `json:"authorAccountId,omitempty"`
+	AuthorKey       string                    `json:"authorKey,omitempty"`
+	Category        string                    `json:"category"`
+	Description     string                    `json:"description,omitempty"`
+	EventSource     string                    `json:"eventSource,omitempty"`
+	RemoteAddress   string                    `json:"remoteAddress,omitempty"`
+	AssociatedItems []JiraAuditAssociatedItem `json:"associatedItems,omitempty"`
+	ChangedValues   []JiraAuditChangedValue   `json:"changedValues,omitempty"`
+	ObjectItem      *JiraAuditObjectItem      `json:"objectItem,omitempty"`
+}
+
+type JiraAuditAssociatedItem struct {
+	ID         string `json:"id,omitempty"`
+	Name       string `json:"name,omitempty"`
+	ParentID   string `json:"parentId,omitempty"`
+	ParentName string `json:"parentName,omitempty"`
+	TypeName   string `json:"typeName,omitempty"`
+}
+
+type JiraAuditChangedValue struct {
+	ChangedFrom string `json:"changedFrom,omitempty"`
+	ChangedTo   string `json:"changedTo,omitempty"`
+	FieldName   string `json:"fieldName,omitempty"`
+}
+
+type JiraAuditObjectItem struct {
+	ID         string `json:"id,omitempty"`
+	Name       string `json:"name,omitempty"`
+	ParentID   string `json:"parentId,omitempty"`
+	ParentName string `json:"parentName,omitempty"`
+	TypeName   string `json:"typeName,omitempty"`
 }
 
 type JiraPermission struct {
-	ID   string `json:"id"`
-	Key  string `json:"key"`
-	Name string `json:"name"`
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Type        string `json:"type"`
+}
+
+type JiraPermissionsResponse struct {
+	Permissions map[string]JiraPermission `json:"permissions"`
 }
 
 type JiraPermissionScheme struct {

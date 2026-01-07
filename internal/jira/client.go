@@ -283,18 +283,13 @@ func (c *Client) FetchAuditRecords(ctx context.Context) ([]JiraAuditRecord, erro
 	if err != nil {
 		return nil, err
 	}
-	c.Logger.Debug("Raw audit records response", "body", string(body))
+	c.Logger.Info("Raw audit records response", "body", string(body))
 
 	var result struct {
 		Records []JiraAuditRecord `json:"records"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
-	}
-
-	// Log the parsed records for debugging
-	for i, record := range result.Records {
-		c.Logger.Debug("Parsed audit record", "index", i, "id", record.ID, "summary", record.Summary, "created", record.Created.ToTime(), "authorName", record.AuthorName)
 	}
 
 	return result.Records, nil
@@ -307,9 +302,8 @@ func (c *Client) FetchGlobalPermissions(ctx context.Context) ([]JiraPermission, 
 	}
 	defer resp.Body.Close()
 	c.logSuccessOrWarn("FetchGlobalPermissions", resp, err)
-	var result struct {
-		Permissions map[string]JiraPermission `json:"permissions"`
-	}
+
+	var result JiraPermissionsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
@@ -423,4 +417,60 @@ func (c *Client) FetchIssueApprovals(ctx context.Context, issueKey string) ([]Ji
 func (c *Client) FetchProjectRemoteLinks(ctx context.Context, projectKey string) ([]JiraRemoteLink, error) {
 	// Placeholder as requested in original code
 	return nil, nil
+}
+
+func (c *Client) GetAllStatuses(ctx context.Context) ([]JiraStatus, error) {
+	resp, err := c.do(ctx, "GET", "/rest/api/3/statuses/search", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	c.logSuccessOrWarn("GetAllStatuses", resp, err)
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var searchResp JiraStatusSearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+		return nil, err
+	}
+
+	c.Logger.Debug("Fetched all statuses", "status", resp.StatusCode, "total", searchResp.Total, "statuses", len(searchResp.Values))
+	return searchResp.Values, nil
+}
+
+func (c *Client) GetWorkflowSchemeProjectAssociations(ctx context.Context, projectIds []int64) ([]JiraWorkflowSchemeProjectAssociation, error) {
+	// Build query parameters for project IDs
+	if len(projectIds) == 0 {
+		return nil, fmt.Errorf("at least one project ID is required")
+	}
+
+	// Convert project IDs to query parameters
+	params := url.Values{}
+	for _, id := range projectIds {
+		params.Add("projectId", fmt.Sprintf("%d", id))
+	}
+
+	url := fmt.Sprintf("/rest/api/3/workflowscheme/project?%s", params.Encode())
+	resp, err := c.do(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	c.logSuccessOrWarn("GetWorkflowSchemeProjectAssociations", resp, err)
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var result JiraWorkflowSchemeProjectAssociationsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	c.Logger.Debug("Fetched workflow scheme project associations", "status", resp.StatusCode, "associations", len(result.Values))
+	return result.Values, nil
 }
