@@ -26,13 +26,14 @@ type Validator interface {
 }
 
 type PluginConfig struct {
-	BaseURL      string `mapstructure:"base_url"`
-	AuthType     string `mapstructure:"auth_type"` // "oauth2" or "token"
-	ClientID     string `mapstructure:"client_id"`
-	ClientSecret string `mapstructure:"client_secret"`
-	APIToken     string `mapstructure:"api_token"`
-	UserEmail    string `mapstructure:"user_email"`
-	ProjectKeys  string `mapstructure:"project_keys"` // Comma-separated list
+	BaseURL                 string `mapstructure:"base_url"`
+	AuthType                string `mapstructure:"auth_type"` // "oauth2" or "token"
+	ClientID                string `mapstructure:"client_id"`
+	ClientSecret            string `mapstructure:"client_secret"`
+	APIToken                string `mapstructure:"api_token"`
+	UserEmail               string `mapstructure:"user_email"`
+	ProjectKeys             string `mapstructure:"project_keys"`               // Comma-separated list
+	ChangeRequestIssueTypes string `mapstructure:"change_request_issue_types"` // Comma-separated list of issue types to consider as change requests
 
 	// Hack to configure policy labels and generate correct evidence UUIDs
 	PolicyLabels string `mapstructure:"policy_labels"`
@@ -40,14 +41,15 @@ type PluginConfig struct {
 
 // ParsedConfig holds the parsed and processed configuration
 type ParsedConfig struct {
-	BaseURL      string            `mapstructure:"base_url"`
-	AuthType     string            `mapstructure:"auth_type"`
-	ClientID     string            `mapstructure:"client_id"`
-	ClientSecret string            `mapstructure:"client_secret"`
-	APIToken     string            `mapstructure:"api_token"`
-	UserEmail    string            `mapstructure:"user_email"`
-	ProjectKeys  []string          `mapstructure:"project_keys"`
-	PolicyLabels map[string]string `mapstructure:"policy_labels"`
+	BaseURL                 string            `mapstructure:"base_url"`
+	AuthType                string            `mapstructure:"auth_type"`
+	ClientID                string            `mapstructure:"client_id"`
+	ClientSecret            string            `mapstructure:"client_secret"`
+	APIToken                string            `mapstructure:"api_token"`
+	UserEmail               string            `mapstructure:"user_email"`
+	ProjectKeys             []string          `mapstructure:"project_keys"`
+	ChangeRequestIssueTypes []string          `mapstructure:"change_request_issue_types"`
+	PolicyLabels            map[string]string `mapstructure:"policy_labels"`
 }
 
 func (c *PluginConfig) Parse() (*ParsedConfig, error) {
@@ -75,6 +77,19 @@ func (c *PluginConfig) Parse() (*ParsedConfig, error) {
 				parsed.ProjectKeys = append(parsed.ProjectKeys, s)
 			}
 		}
+	}
+
+	// Parse change request issue types with defaults
+	if c.ChangeRequestIssueTypes != "" {
+		parts := strings.Split(c.ChangeRequestIssueTypes, ",")
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				parsed.ChangeRequestIssueTypes = append(parsed.ChangeRequestIssueTypes, s)
+			}
+		}
+	} else {
+		// Default values
+		parsed.ChangeRequestIssueTypes = []string{"Change Request", "Change"}
 	}
 
 	return parsed, nil
@@ -163,8 +178,11 @@ func (l *JiraPlugin) Eval(req *proto.EvalRequest, apiHelper runner.ApiHelper) (*
 	}
 
 	jiraData, err := l.collectData(ctx, client)
-	indentedJSON, _ := json.MarshalIndent(jiraData, "", "  ")
-	os.WriteFile("/data/jira_data.json", indentedJSON, 0o644)
+	jiraJSON, _ := json.MarshalIndent(jiraData, "", "  ")
+	converted := jiraData.ToProjectCentric()
+	indentedJSON, _ := json.MarshalIndent(converted, "", "  ")
+	os.WriteFile("/data/project_data.json", indentedJSON, 0o644)
+	os.WriteFile("/data/jira_data.json", jiraJSON, 0o644)
 	if err != nil {
 		l.Logger.Error("Error collecting Jira data", "error", err)
 		return &proto.EvalResponse{
@@ -172,7 +190,7 @@ func (l *JiraPlugin) Eval(req *proto.EvalRequest, apiHelper runner.ApiHelper) (*
 		}, err
 	}
 
-	evidences, err := l.EvaluatePolicies(ctx, jiraData, req)
+	evidences, err := l.EvaluatePolicies(ctx, converted, req)
 	if err != nil {
 		l.Logger.Error("Error evaluating policies", "error", err)
 		return &proto.EvalResponse{
@@ -199,6 +217,17 @@ func (l *JiraPlugin) collectData(ctx context.Context, client *jira.Client) (*jir
 	data.Workflows, err = client.FetchWorkflows(ctx)
 	if err != nil {
 		l.Logger.Warn("failed to fetch workflows", "error", err)
+	}
+
+	// Fetch workflow capabilities for each workflow
+	if len(data.Workflows) > 0 {
+		// For now, fetch capabilities for the first workflow as an example
+		// In the future, we could fetch for all workflows or specific ones
+		firstWorkflow := data.Workflows[0]
+		data.WorkflowCapabilities, err = client.FetchWorkflowCapabilities(ctx, firstWorkflow.ID)
+		if err != nil {
+			l.Logger.Warn("failed to fetch workflow capabilities", "workflowId", firstWorkflow.ID, "error", err)
+		}
 	}
 
 	data.WorkflowSchemes, err = client.FetchWorkflowSchemes(ctx)
@@ -277,20 +306,16 @@ func (l *JiraPlugin) collectData(ctx context.Context, client *jira.Client) (*jir
 	}
 
 	// 4. Search for Change Request issues
-	issues, err := client.SearchChangeRequests(ctx)
+	issues, err := client.SearchChangeRequests(ctx, l.parsedConfig.ProjectKeys, l.parsedConfig.ChangeRequestIssueTypes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search issues: %w", err)
 	}
 	data.Issues = issues
-	// 5. Fetch Details, Changelog, Approvals, SLAs, DevInfo, and Deployments for each issue
+	// 5. Fetch Details, Approvals, SLAs, DevInfo, and Deployments for each issue
 	for i, issue := range data.Issues {
 		l.Logger.Info("Fetching details for issue", "issue", issue.Key)
-		changelog, err := client.FetchIssueChangelog(ctx, issue.Key)
-		if err != nil {
-			l.Logger.Warn("failed to fetch changelog for issue", "issue", issue.Key, "error", err)
-		} else {
-			data.Issues[i].Changelog = changelog
-		}
+		// Note: Changelog is already fetched via expand=changelog in SearchChangeRequests
+		// No need to fetch it separately unless we need additional pagination
 
 		approvals, err := client.FetchIssueApprovals(ctx, issue.Key)
 		if err != nil {
@@ -323,7 +348,7 @@ func (l *JiraPlugin) collectData(ctx context.Context, client *jira.Client) (*jir
 	return data, nil
 }
 
-func (l *JiraPlugin) EvaluatePolicies(ctx context.Context, data *jira.JiraData, req *proto.EvalRequest) ([]*proto.Evidence, error) {
+func (l *JiraPlugin) EvaluatePolicies(ctx context.Context, data *jira.ProjectCentricData, req *proto.EvalRequest) ([]*proto.Evidence, error) {
 	var accumulatedErrors error
 
 	activities := make([]*proto.Activity, 0)

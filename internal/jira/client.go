@@ -85,7 +85,7 @@ func (t *oauth2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Form encode the parameters
 	data := url.Values{}
 	data.Set("grant_type", "client_credentials")
-	data.Set("scope", "read:jira-user read:jira-work read:workflow:jira read:permission:jira read:workflow-scheme:jira read:audit-log:jira read:avatar:jira read:group:jira read:issue-type:jira read:project-category:jira read:project:jira read:user:jira read:application-role:jira")
+	data.Set("scope", "read:jira-user read:jira-work read:workflow:jira read:permission:jira read:workflow-scheme:jira read:audit-log:jira read:avatar:jira read:group:jira read:issue-type:jira read:project-category:jira read:project:jira read:user:jira read:application-role:jira read:servicedesk-request")
 	tokenReq.Body = io.NopCloser(strings.NewReader(data.Encode()))
 
 	resp, err := t.base.RoundTrip(tokenReq)
@@ -182,63 +182,149 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader) (*
 }
 
 func (c *Client) FetchProjects(ctx context.Context) ([]JiraProject, error) {
-	resp, err := c.do(ctx, "GET", "/rest/api/3/project/search", nil)
+	var allProjects []JiraProject
+	startAt := 0
+	maxResults := 50 // Jira default max per page
+
+	for {
+		// Build URL with pagination parameters and expand to include lead
+		url := fmt.Sprintf("/rest/api/3/project/search?startAt=%d&maxResults=%d&expand=lead", startAt, maxResults)
+		resp, err := c.do(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		c.logSuccessOrWarn("FetchProjects", resp, err)
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+		}
+		body := resp.Body
+		var searchResp JiraProjectSearchResponse
+		if err := json.NewDecoder(body).Decode(&searchResp); err != nil {
+			return nil, err
+		}
+
+		// Add current page results to all projects
+		allProjects = append(allProjects, searchResp.Values...)
+		c.Logger.Debug("Fetched projects page", "startAt", startAt, "count", len(searchResp.Values), "total", searchResp.Total)
+
+		// Check if this is the last page
+		if searchResp.IsLast || len(searchResp.Values) == 0 {
+			break
+		}
+
+		// Move to next page
+		startAt += len(searchResp.Values)
+	}
+
+	c.Logger.Debug("Fetched all projects", "total", len(allProjects))
+	return allProjects, nil
+}
+
+func (c *Client) FetchWorkflowCapabilities(ctx context.Context, workflowID string) (*JiraWorkflowCapabilities, error) {
+	url := fmt.Sprintf("/rest/api/3/workflows/capabilities?workflowId=%s", workflowID)
+	resp, err := c.do(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	c.logSuccessOrWarn("FetchProjects", resp, err)
+	c.logSuccessOrWarn("FetchWorkflowCapabilities", resp, err)
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
 	}
-	body := resp.Body
-	var searchResp JiraProjectSearchResponse
-	if err := json.NewDecoder(body).Decode(&searchResp); err != nil {
+
+	var capabilities JiraWorkflowCapabilities
+	if err := json.NewDecoder(resp.Body).Decode(&capabilities); err != nil {
 		return nil, err
 	}
-	c.Logger.Debug("Fetched projects", "status", resp.StatusCode, "total", searchResp.Total, "projects", len(searchResp.Values))
-	return searchResp.Values, nil
+
+	c.Logger.Debug("Fetched workflow capabilities", "workflowId", workflowID)
+	return &capabilities, nil
 }
 
 func (c *Client) FetchWorkflows(ctx context.Context) ([]JiraWorkflow, error) {
-	resp, err := c.do(ctx, "GET", "/rest/api/3/workflows/search", nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	c.logSuccessOrWarn("FetchWorkflows", resp, err)
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	var allWorkflows []JiraWorkflow
+	startAt := 0
+	maxResults := 50 // Jira default max per page
+
+	for {
+		// Build URL with pagination parameters and expand to include transitions
+		url := fmt.Sprintf("/rest/api/3/workflows/search?startAt=%d&maxResults=%d&expand=values.transitions", startAt, maxResults)
+		resp, err := c.do(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		c.logSuccessOrWarn("FetchWorkflows", resp, err)
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+		}
+
+		var searchResp JiraWorkflowSearchResponse
+		if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+			return nil, err
+		}
+
+		// Add current page results to all workflows
+		allWorkflows = append(allWorkflows, searchResp.Values...)
+		c.Logger.Debug("Fetched workflows page", "startAt", startAt, "count", len(searchResp.Values), "total", searchResp.Total)
+
+		// Check if this is the last page
+		if searchResp.IsLast || len(searchResp.Values) == 0 {
+			break
+		}
+
+		// Move to next page
+		startAt += len(searchResp.Values)
 	}
 
-	var searchResp JiraWorkflowSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
-		return nil, err
-	}
-	c.Logger.Debug("Fetched workflows", "status", resp.StatusCode, "total", searchResp.Total, "workflows", len(searchResp.Values))
-	return searchResp.Values, nil
+	c.Logger.Debug("Fetched all workflows", "total", len(allWorkflows))
+	return allWorkflows, nil
 }
 
 func (c *Client) FetchWorkflowSchemes(ctx context.Context) ([]JiraWorkflowScheme, error) {
-	resp, err := c.do(ctx, "GET", "/rest/api/3/workflowscheme", nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	c.logSuccessOrWarn("FetchWorkflowSchemes", resp, err)
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	var allWorkflowSchemes []JiraWorkflowScheme
+	startAt := 0
+	maxResults := 50 // Jira default max per page
+
+	for {
+		// Build URL with pagination parameters
+		url := fmt.Sprintf("/rest/api/3/workflowscheme?startAt=%d&maxResults=%d", startAt, maxResults)
+		resp, err := c.do(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		c.logSuccessOrWarn("FetchWorkflowSchemes", resp, err)
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+		}
+
+		var searchResp JiraWorkflowSchemeSearchResponse
+		if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+			return nil, err
+		}
+
+		// Add current page results to all workflow schemes
+		allWorkflowSchemes = append(allWorkflowSchemes, searchResp.Values...)
+		c.Logger.Debug("Fetched workflow schemes page", "startAt", startAt, "count", len(searchResp.Values), "total", searchResp.Total)
+
+		// Check if this is the last page
+		if searchResp.IsLast || len(searchResp.Values) == 0 {
+			break
+		}
+
+		// Move to next page
+		startAt += len(searchResp.Values)
 	}
 
-	var searchResp JiraWorkflowSchemeSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
-		return nil, err
-	}
-	c.Logger.Debug("Fetched workflow schemes", "status", resp.StatusCode, "total", searchResp.Total, "schemes", len(searchResp.Values))
-	return searchResp.Values, nil
+	c.Logger.Debug("Fetched all workflow schemes", "total", len(allWorkflowSchemes))
+	return allWorkflowSchemes, nil
 }
 
 func (c *Client) FetchIssueTypes(ctx context.Context) ([]JiraIssueType, error) {
@@ -283,7 +369,6 @@ func (c *Client) FetchAuditRecords(ctx context.Context) ([]JiraAuditRecord, erro
 	if err != nil {
 		return nil, err
 	}
-	c.Logger.Info("Raw audit records response", "body", string(body))
 
 	var result struct {
 		Records []JiraAuditRecord `json:"records"`
@@ -316,19 +401,54 @@ func (c *Client) FetchGlobalPermissions(ctx context.Context) ([]JiraPermission, 
 }
 
 func (c *Client) FetchIssueSLAs(ctx context.Context, issueKey string) ([]JiraSLA, error) {
-	resp, err := c.do(ctx, "GET", fmt.Sprintf("/rest/servicedeskapi/request/%s/sla", issueKey), nil)
-	if err != nil {
-		return nil, err
+	var allSLAs []JiraSLA
+	startAt := 0
+	maxResults := 50 // Jira default max per page
+
+	for {
+		// Build URL with pagination parameters
+		url := fmt.Sprintf("/rest/servicedeskapi/request/%s/sla?startAt=%d&maxResults=%d", issueKey, startAt, maxResults)
+		resp, err := c.do(ctx, "GET", url, nil)
+		if err != nil {
+			c.Logger.Error("Error fetching SLAs", "issue", issueKey, "error", err)
+			return nil, err
+		}
+		defer resp.Body.Close()
+		c.logSuccessOrWarn("FetchIssueSLAs", resp, err)
+
+		// Read the response body for debugging
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			c.Logger.Error("Error reading SLA response body", "issue", issueKey, "error", err)
+			return nil, err
+		}
+
+		var result struct {
+			Values     []JiraSLA `json:"values"`
+			StartAt    int       `json:"startAt"`
+			MaxResults int       `json:"maxResults"`
+			Total      int       `json:"total"`
+		}
+
+		if err := json.Unmarshal(body, &result); err != nil {
+			c.Logger.Error("Error unmarshaling SLA response", "issue", issueKey, "error", err, "body", string(body))
+			return nil, err
+		}
+
+		// Add current page results to all SLAs
+		allSLAs = append(allSLAs, result.Values...)
+		c.Logger.Debug("Fetched SLAs page", "issue", issueKey, "startAt", startAt, "count", len(result.Values), "total", result.Total)
+
+		// Check if this is the last page
+		if len(result.Values) == 0 || startAt+len(result.Values) >= result.Total {
+			break
+		}
+
+		// Move to next page
+		startAt += len(result.Values)
 	}
-	defer resp.Body.Close()
-	c.logSuccessOrWarn("FetchIssueSLAs", resp, err)
-	var result struct {
-		Values []JiraSLA `json:"values"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	return result.Values, nil
+
+	return allSLAs, nil
 }
 
 func (c *Client) FetchIssueDevInfo(ctx context.Context, issueKey string) (*JiraDevInfo, error) {
@@ -361,57 +481,167 @@ func (c *Client) FetchIssueDeployments(ctx context.Context, issueKey string) ([]
 	return result.Deployments, nil
 }
 
-func (c *Client) SearchChangeRequests(ctx context.Context) ([]JiraIssue, error) {
-	jql := "issuetype in ('Change Request', 'Change') AND status != 'Draft'"
-	query := url.Values{}
-	query.Set("jql", jql)
-	query.Set("expand", "changelog")
+func (c *Client) SearchChangeRequests(ctx context.Context, projectKeys []string, issueTypes []string) ([]JiraIssue, error) {
+	// Build JQL query for issue types
+	var issueTypeFilter string
+	if len(issueTypes) > 0 {
+		// Build issue type filter: issuetype in ('Type1', 'Type2', 'Type3')
+		issueTypeFilter = "issuetype in ("
+		for i, issueType := range issueTypes {
+			if i > 0 {
+				issueTypeFilter += ", "
+			}
+			issueTypeFilter += fmt.Sprintf("'%s'", issueType)
+		}
+		issueTypeFilter += ")"
+	} else {
+		// Fallback to default if no issue types provided
+		issueTypeFilter = "issuetype in ('Change Request', 'Change')"
+	}
 
-	resp, err := c.do(ctx, "GET", "/rest/api/3/search/jql?"+query.Encode(), nil)
-	if err != nil {
-		return nil, err
+	jql := fmt.Sprintf("%s AND status != 'Draft'", issueTypeFilter)
+
+	// Add project filter if project keys are specified
+	if len(projectKeys) > 0 {
+		c.Logger.Debug("<<SearchChangeRequests>> Filtering by project keys", "projectKeys", projectKeys)
+		// Build project filter: project in (KEY1, KEY2, KEY3)
+		projectFilter := "project in ("
+		for i, key := range projectKeys {
+			if i > 0 {
+				projectFilter += ", "
+			}
+			projectFilter += fmt.Sprintf("'%s'", key)
+		}
+		projectFilter += ")"
+		jql = fmt.Sprintf("%s AND %s", projectFilter, jql)
 	}
-	defer resp.Body.Close()
-	c.logSuccessOrWarn("SearchChangeRequests", resp, err)
-	var result struct {
-		Issues []JiraIssue `json:"issues"`
+
+	var allIssues []JiraIssue
+	startAt := 0
+	maxResults := 50 // Jira default max per page
+
+	for {
+		query := url.Values{}
+		query.Set("jql", jql)
+		query.Set("expand", "changelog")
+		query.Set("fields", "project,issuetype,status,summary,description,reporter,assignee,priority,created,updated,duedate,environment,approvals")
+		query.Set("startAt", fmt.Sprintf("%d", startAt))
+		query.Set("maxResults", fmt.Sprintf("%d", maxResults))
+
+		resp, err := c.do(ctx, "GET", "/rest/api/3/search/jql?"+query.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		c.logSuccessOrWarn("SearchChangeRequests", resp, err)
+
+		var result struct {
+			Issues     []JiraIssue `json:"issues"`
+			StartAt    int         `json:"startAt"`
+			MaxResults int         `json:"maxResults"`
+			Total      int         `json:"total"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, err
+		}
+
+		// Add current page results to all issues
+		allIssues = append(allIssues, result.Issues...)
+		c.Logger.Debug("Searched change requests page", "startAt", startAt, "count", len(result.Issues), "total", result.Total)
+
+		// Check if this is the last page
+		if len(result.Issues) == 0 || startAt+len(result.Issues) >= result.Total {
+			break
+		}
+
+		// Move to next page
+		startAt += len(result.Issues)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	return result.Issues, nil
+
+	c.Logger.Debug("Searched all change requests", "total", len(allIssues))
+	return allIssues, nil
 }
 
 func (c *Client) FetchIssueChangelog(ctx context.Context, issueKey string) ([]JiraChangelogEntry, error) {
-	resp, err := c.do(ctx, "GET", fmt.Sprintf("/rest/api/3/issue/%s/changelog", issueKey), nil)
-	if err != nil {
-		return nil, err
+	var allEntries []JiraChangelogEntry
+	startAt := 0
+	maxResults := 50 // Jira default max per page
+
+	for {
+		// Build URL with pagination parameters
+		url := fmt.Sprintf("/rest/api/3/issue/%s/changelog?startAt=%d&maxResults=%d", issueKey, startAt, maxResults)
+		resp, err := c.do(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		c.logSuccessOrWarn("FetchIssueChangelog", resp, err)
+
+		var result struct {
+			Values     []JiraChangelogEntry `json:"values"`
+			StartAt    int                  `json:"startAt"`
+			MaxResults int                  `json:"maxResults"`
+			Total      int                  `json:"total"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, err
+		}
+
+		// Add current page results to all entries
+		allEntries = append(allEntries, result.Values...)
+		c.Logger.Debug("Fetched changelog page", "issue", issueKey, "startAt", startAt, "count", len(result.Values), "total", result.Total)
+
+		// Check if this is the last page
+		if len(result.Values) == 0 || startAt+len(result.Values) >= result.Total {
+			break
+		}
+
+		// Move to next page
+		startAt += len(result.Values)
 	}
-	defer resp.Body.Close()
-	c.logSuccessOrWarn("FetchIssueChangelog", resp, err)
-	var result struct {
-		Values []JiraChangelogEntry `json:"values"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	return result.Values, nil
+
+	return allEntries, nil
 }
 
 func (c *Client) FetchIssueApprovals(ctx context.Context, issueKey string) ([]JiraApproval, error) {
-	resp, err := c.do(ctx, "GET", fmt.Sprintf("/rest/servicedeskapi/request/%s/approval", issueKey), nil)
-	if err != nil {
-		return nil, err
+	var allApprovals []JiraApproval
+	startAt := 0
+	maxResults := 50 // Jira default max per page
+
+	for {
+		// Build URL with pagination parameters
+		url := fmt.Sprintf("/rest/servicedeskapi/request/%s/approval?startAt=%d&maxResults=%d", issueKey, startAt, maxResults)
+		resp, err := c.do(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		c.logSuccessOrWarn("FetchIssueApprovals", resp, err)
+
+		var result struct {
+			Values     []JiraApproval `json:"values"`
+			StartAt    int            `json:"startAt"`
+			MaxResults int            `json:"maxResults"`
+			Total      int            `json:"total"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, err
+		}
+
+		// Add current page results to all approvals
+		allApprovals = append(allApprovals, result.Values...)
+		c.Logger.Debug("Fetched approvals page", "issue", issueKey, "startAt", startAt, "count", len(result.Values), "total", result.Total)
+
+		// Check if this is the last page
+		if len(result.Values) == 0 || startAt+len(result.Values) >= result.Total {
+			break
+		}
+
+		// Move to next page
+		startAt += len(result.Values)
 	}
-	defer resp.Body.Close()
-	c.logSuccessOrWarn("FetchIssueApprovals", resp, err)
-	var result struct {
-		Values []JiraApproval `json:"values"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	return result.Values, nil
+
+	return allApprovals, nil
 }
 
 func (c *Client) FetchProjectRemoteLinks(ctx context.Context, projectKey string) ([]JiraRemoteLink, error) {
@@ -420,25 +650,45 @@ func (c *Client) FetchProjectRemoteLinks(ctx context.Context, projectKey string)
 }
 
 func (c *Client) GetAllStatuses(ctx context.Context) ([]JiraStatus, error) {
-	resp, err := c.do(ctx, "GET", "/rest/api/3/statuses/search", nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	c.logSuccessOrWarn("GetAllStatuses", resp, err)
+	var allStatuses []JiraStatus
+	startAt := 0
+	maxResults := 50 // Jira default max per page
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	for {
+		// Build URL with pagination parameters
+		url := fmt.Sprintf("/rest/api/3/statuses/search?startAt=%d&maxResults=%d", startAt, maxResults)
+		resp, err := c.do(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		c.logSuccessOrWarn("GetAllStatuses", resp, err)
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+		}
+
+		var searchResp JiraStatusSearchResponse
+		if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+			return nil, err
+		}
+
+		// Add current page results to all statuses
+		allStatuses = append(allStatuses, searchResp.Values...)
+		c.Logger.Debug("Fetched statuses page", "startAt", startAt, "count", len(searchResp.Values), "total", searchResp.Total)
+
+		// Check if this is the last page
+		if searchResp.IsLast || len(searchResp.Values) == 0 {
+			break
+		}
+
+		// Move to next page
+		startAt += len(searchResp.Values)
 	}
 
-	var searchResp JiraStatusSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
-		return nil, err
-	}
-
-	c.Logger.Debug("Fetched all statuses", "status", resp.StatusCode, "total", searchResp.Total, "statuses", len(searchResp.Values))
-	return searchResp.Values, nil
+	c.Logger.Debug("Fetched all statuses", "total", len(allStatuses))
+	return allStatuses, nil
 }
 
 func (c *Client) GetWorkflowSchemeProjectAssociations(ctx context.Context, projectIds []int64) ([]JiraWorkflowSchemeProjectAssociation, error) {
@@ -473,4 +723,66 @@ func (c *Client) GetWorkflowSchemeProjectAssociations(ctx context.Context, proje
 
 	c.Logger.Debug("Fetched workflow scheme project associations", "status", resp.StatusCode, "associations", len(result.Values))
 	return result.Values, nil
+}
+
+// GetWorkflowSchemesForProjects retrieves workflow schemes for specific project IDs
+func (c *Client) GetWorkflowSchemesForProjects(ctx context.Context, projectIds []int64) ([]JiraWorkflowScheme, error) {
+	associations, err := c.GetWorkflowSchemeProjectAssociations(ctx, projectIds)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract unique workflow scheme IDs
+	schemeIDs := make(map[int64]bool)
+	for _, assoc := range associations {
+		schemeIDs[assoc.WorkflowScheme.ID] = true
+	}
+
+	// Fetch all workflow schemes
+	allSchemes, err := c.FetchWorkflowSchemes(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter schemes that are associated with the projects
+	var filteredSchemes []JiraWorkflowScheme
+	for _, scheme := range allSchemes {
+		if schemeIDs[scheme.ID] {
+			filteredSchemes = append(filteredSchemes, scheme)
+		}
+	}
+
+	return filteredSchemes, nil
+}
+
+// GetWorkflowsForWorkflowSchemes retrieves workflows for specific workflow schemes
+func (c *Client) GetWorkflowsForWorkflowSchemes(ctx context.Context, workflowSchemes []JiraWorkflowScheme) ([]JiraWorkflow, error) {
+	// Get all workflows
+	allWorkflows, err := c.FetchWorkflows(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create a map of workflow names from schemes
+	workflowNames := make(map[string]bool)
+	for _, scheme := range workflowSchemes {
+		// Add default workflow
+		if scheme.DefaultWorkflow != "" {
+			workflowNames[scheme.DefaultWorkflow] = true
+		}
+		// Add workflows from issue type mappings
+		for _, workflowName := range scheme.IssueTypeMappings {
+			workflowNames[workflowName] = true
+		}
+	}
+
+	// Filter workflows that are referenced in the schemes
+	var filteredWorkflows []JiraWorkflow
+	for _, workflow := range allWorkflows {
+		if workflowNames[workflow.Name] {
+			filteredWorkflows = append(filteredWorkflows, workflow)
+		}
+	}
+
+	return filteredWorkflows, nil
 }
