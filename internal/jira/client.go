@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 )
@@ -22,7 +24,7 @@ type Client struct {
 
 func NewClient(baseURL string, httpClient *http.Client, logger hclog.Logger) (*Client, error) {
 	// First, fetch the Cloud ID
-	cloudID, err := fetchCloudID(baseURL)
+	cloudID, err := fetchCloudID(baseURL, logger)
 	if err != nil {
 		logger.Error("Failed to fetch Cloud ID", "error", err)
 		return nil, fmt.Errorf("failed to fetch Cloud ID: %w", err)
@@ -38,13 +40,18 @@ func NewClient(baseURL string, httpClient *http.Client, logger hclog.Logger) (*C
 	}, nil
 }
 
-func fetchCloudID(baseURL string) (string, error) {
+func fetchCloudID(baseURL string, logger hclog.Logger) (string, error) {
 	// Make request to get tenant info
 	resp, err := http.Get(baseURL + "/_edge/tenant_info")
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			logger.Error("Failed to close response body", "error", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("failed to get tenant info: %d", resp.StatusCode)
@@ -71,9 +78,26 @@ type oauth2Transport struct {
 	clientID string
 	secret   string
 	resource string
+
+	// Token caching fields
+	mu          sync.Mutex
+	cachedToken string
+	expiresAt   time.Time
 }
 
 func (t *oauth2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Check if we have a valid cached token
+	t.mu.Lock()
+	if t.cachedToken != "" && time.Now().Before(t.expiresAt) {
+		token := t.cachedToken
+		t.mu.Unlock()
+		// Use cached token
+		newReq := req.Clone(req.Context())
+		newReq.Header.Set("Authorization", "Bearer "+token)
+		return t.base.RoundTrip(newReq)
+	}
+	t.mu.Unlock()
+
 	// Get OAuth2 token with required scopes
 	tokenReq, err := http.NewRequest("POST", t.tokenURL, nil)
 	if err != nil {
@@ -92,7 +116,12 @@ func (t *oauth2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			t.logger.Error("failed to close body", "error", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -111,10 +140,16 @@ func (t *oauth2Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	t.logger.Debug("Got OAuth2 token", "scope", tokenResp.Scope, "expiresIn", tokenResp.ExpiresIn)
 
+	// Cache the token with a buffer before expiration (subtract 60 seconds)
+	t.mu.Lock()
+	t.cachedToken = tokenResp.AccessToken
+	t.expiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn-60) * time.Second)
+	t.mu.Unlock()
+
 	// Clone the request and set the bearer token
 	newReq := req.Clone(req.Context())
 	newReq.Header.Set("Authorization", "Bearer "+tokenResp.AccessToken)
-	t.logger.Debug("Making request with Bearer token", "url", newReq.URL.String(), "auth", "Bearer "+tokenResp.AccessToken[:10]+"...")
+	t.logger.Debug("Making request with Bearer token", "url", newReq.URL.String())
 	return t.base.RoundTrip(newReq)
 }
 
@@ -125,8 +160,9 @@ type tokenAuthTransport struct {
 }
 
 func (t *tokenAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.SetBasicAuth(t.email, t.token)
-	return t.base.RoundTrip(req)
+	newReq := req.Clone(req.Context())
+	newReq.SetBasicAuth(t.email, t.token)
+	return t.base.RoundTrip(newReq)
 }
 
 func NewTokenAuthClient(email, token string) *http.Client {
@@ -141,15 +177,17 @@ func NewTokenAuthClient(email, token string) *http.Client {
 
 func (c *Client) logSuccessOrWarn(request string, resp *http.Response, err error) {
 	if err != nil {
-		c.Logger.Warn("<<<FAIL>>> Fail with the request", "request", request, "error", err)
+		c.Logger.Warn("Request failed", "request", request, "error", err)
 		return
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		c.Logger.Warn("<<<FAIL>>> Request status code != 200", "request", request, "status code", resp.StatusCode, "body", string(body))
+		bodyLen := len(body)
+		// Only log a summary of the error, not the full body which may contain sensitive data
+		c.Logger.Warn("Request returned non-OK status", "request", request, "statusCode", resp.StatusCode, "bodyLength", bodyLen)
 		return
 	}
-	c.Logger.Info("<<<SUCCESS>>> Request Successful! ", "request", request)
+	c.Logger.Info("Request successful", "request", request)
 }
 func NewOAuth2Client(clientID, clientSecret, baseURL string, logger hclog.Logger) *http.Client {
 	return &http.Client{
@@ -193,16 +231,26 @@ func (c *Client) FetchProjects(ctx context.Context) ([]JiraProject, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
 		c.logSuccessOrWarn("FetchProjects", resp, err)
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if closeErr != nil {
+				c.Logger.Error("failed to close body", "error", closeErr)
+			}
 			return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
 		}
-		body := resp.Body
 		var searchResp JiraProjectSearchResponse
-		if err := json.NewDecoder(body).Decode(&searchResp); err != nil {
+		if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+			closeErr := resp.Body.Close()
+			if closeErr != nil {
+				c.Logger.Error("failed to close body", "error", closeErr)
+			}
 			return nil, err
+		}
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			c.Logger.Error("failed to close body", "error", closeErr)
 		}
 
 		// Add current page results to all projects
@@ -228,7 +276,12 @@ func (c *Client) FetchWorkflowCapabilities(ctx context.Context, workflowID strin
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			c.Logger.Error("failed to close body", "error", err)
+		}
+	}()
 	c.logSuccessOrWarn("FetchWorkflowCapabilities", resp, err)
 
 	if resp.StatusCode != http.StatusOK {
@@ -257,16 +310,27 @@ func (c *Client) FetchWorkflows(ctx context.Context) ([]JiraWorkflow, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
 		c.logSuccessOrWarn("FetchWorkflows", resp, err)
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if closeErr != nil {
+				c.Logger.Error("failed to close body", "error", closeErr)
+			}
 			return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
 		}
 
 		var searchResp JiraWorkflowSearchResponse
 		if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+			closeErr := resp.Body.Close()
+			if closeErr != nil {
+				c.Logger.Error("failed to close body", "error", closeErr)
+			}
 			return nil, err
+		}
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			c.Logger.Error("failed to close body", "error", closeErr)
 		}
 
 		// Add current page results to all workflows
@@ -298,16 +362,27 @@ func (c *Client) FetchWorkflowSchemes(ctx context.Context) ([]JiraWorkflowScheme
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
 		c.logSuccessOrWarn("FetchWorkflowSchemes", resp, err)
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if closeErr != nil {
+				c.Logger.Error("failed to close body", "error", closeErr)
+			}
 			return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
 		}
 
 		var searchResp JiraWorkflowSchemeSearchResponse
 		if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+			closeErr := resp.Body.Close()
+			if closeErr != nil {
+				c.Logger.Error("failed to close body", "error", closeErr)
+			}
 			return nil, err
+		}
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			c.Logger.Error("failed to close body", "error", closeErr)
 		}
 
 		// Add current page results to all workflow schemes
@@ -332,7 +407,12 @@ func (c *Client) FetchIssueTypes(ctx context.Context) ([]JiraIssueType, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			c.Logger.Error("failed to close body", "error", err)
+		}
+	}()
 	c.logSuccessOrWarn("FetchIssueTypes", resp, err)
 	var types []JiraIssueType
 	if err := json.NewDecoder(resp.Body).Decode(&types); err != nil {
@@ -347,7 +427,12 @@ func (c *Client) FetchFields(ctx context.Context) ([]JiraField, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			c.Logger.Error("failed to close body", "error", err)
+		}
+	}()
 	c.logSuccessOrWarn("FetchFields", resp, err)
 	var fields []JiraField
 	if err := json.NewDecoder(resp.Body).Decode(&fields); err != nil {
@@ -361,7 +446,12 @@ func (c *Client) FetchAuditRecords(ctx context.Context) ([]JiraAuditRecord, erro
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			c.Logger.Error("failed to close body", "error", err)
+		}
+	}()
 	c.logSuccessOrWarn("FetchAuditRecords", resp, err)
 
 	// Read the raw response for debugging
@@ -385,7 +475,12 @@ func (c *Client) FetchGlobalPermissions(ctx context.Context) ([]JiraPermission, 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			c.Logger.Error("failed to close body", "error", err)
+		}
+	}()
 	c.logSuccessOrWarn("FetchGlobalPermissions", resp, err)
 
 	var result JiraPermissionsResponse
@@ -413,11 +508,14 @@ func (c *Client) FetchIssueSLAs(ctx context.Context, issueKey string) ([]JiraSLA
 			c.Logger.Error("Error fetching SLAs", "issue", issueKey, "error", err)
 			return nil, err
 		}
-		defer resp.Body.Close()
 		c.logSuccessOrWarn("FetchIssueSLAs", resp, err)
 
-		// Read the response body for debugging
+		// Read the response body
 		body, err := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			c.Logger.Error("failed to close body", "error", closeErr)
+		}
 		if err != nil {
 			c.Logger.Error("Error reading SLA response body", "issue", issueKey, "error", err)
 			return nil, err
@@ -431,7 +529,7 @@ func (c *Client) FetchIssueSLAs(ctx context.Context, issueKey string) ([]JiraSLA
 		}
 
 		if err := json.Unmarshal(body, &result); err != nil {
-			c.Logger.Error("Error unmarshaling SLA response", "issue", issueKey, "error", err, "body", string(body))
+			c.Logger.Error("Error unmarshaling SLA response", "issue", issueKey, "error", err)
 			return nil, err
 		}
 
@@ -456,7 +554,12 @@ func (c *Client) FetchIssueDevInfo(ctx context.Context, issueKey string) (*JiraD
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			c.Logger.Error("failed to close body", "error", err)
+		}
+	}()
 	c.logSuccessOrWarn("FetchIssueDevInfo", resp, err)
 	var info JiraDevInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
@@ -470,7 +573,12 @@ func (c *Client) FetchIssueDeployments(ctx context.Context, issueKey string) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			c.Logger.Error("failed to close body", "error", err)
+		}
+	}()
 	c.logSuccessOrWarn("FetchIssueDeployments", resp, err)
 	var result struct {
 		Deployments []JiraDeployment `json:"deployments"`
@@ -532,7 +640,6 @@ func (c *Client) SearchChangeRequests(ctx context.Context, projectKeys []string,
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
 		c.logSuccessOrWarn("SearchChangeRequests", resp, err)
 
 		var result struct {
@@ -542,7 +649,15 @@ func (c *Client) SearchChangeRequests(ctx context.Context, projectKeys []string,
 			Total      int         `json:"total"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			closeErr := resp.Body.Close()
+			if closeErr != nil {
+				c.Logger.Error("failed to close body", "error", closeErr)
+			}
 			return nil, err
+		}
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			c.Logger.Error("failed to close body", "error", closeErr)
 		}
 
 		// Add current page results to all issues
@@ -574,7 +689,6 @@ func (c *Client) FetchIssueChangelog(ctx context.Context, issueKey string) ([]Ji
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
 		c.logSuccessOrWarn("FetchIssueChangelog", resp, err)
 
 		var result struct {
@@ -584,7 +698,15 @@ func (c *Client) FetchIssueChangelog(ctx context.Context, issueKey string) ([]Ji
 			Total      int                  `json:"total"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			closeErr := resp.Body.Close()
+			if closeErr != nil {
+				c.Logger.Error("failed to close body", "error", closeErr)
+			}
 			return nil, err
+		}
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			c.Logger.Error("failed to close body", "error", closeErr)
 		}
 
 		// Add current page results to all entries
@@ -615,7 +737,6 @@ func (c *Client) FetchIssueApprovals(ctx context.Context, issueKey string) ([]Ji
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
 		c.logSuccessOrWarn("FetchIssueApprovals", resp, err)
 
 		var result struct {
@@ -625,7 +746,15 @@ func (c *Client) FetchIssueApprovals(ctx context.Context, issueKey string) ([]Ji
 			Total      int            `json:"total"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			closeErr := resp.Body.Close()
+			if closeErr != nil {
+				c.Logger.Error("failed to close body", "error", closeErr)
+			}
 			return nil, err
+		}
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			c.Logger.Error("failed to close body", "error", closeErr)
 		}
 
 		// Add current page results to all approvals
@@ -661,17 +790,28 @@ func (c *Client) GetAllStatuses(ctx context.Context) ([]JiraStatus, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
 		c.logSuccessOrWarn("GetAllStatuses", resp, err)
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if closeErr != nil {
+				c.Logger.Error("failed to close body", "error", closeErr)
+			}
 			return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
 		}
 
 		var searchResp JiraStatusSearchResponse
 		if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+			closeErr := resp.Body.Close()
+			if closeErr != nil {
+				c.Logger.Error("failed to close body", "error", closeErr)
+			}
 			return nil, err
+		}
+		closeErr := resp.Body.Close()
+		if closeErr != nil {
+			c.Logger.Error("failed to close body", "error", closeErr)
 		}
 
 		// Add current page results to all statuses
@@ -703,12 +843,17 @@ func (c *Client) GetWorkflowSchemeProjectAssociations(ctx context.Context, proje
 		params.Add("projectId", fmt.Sprintf("%d", id))
 	}
 
-	url := fmt.Sprintf("/rest/api/3/workflowscheme/project?%s", params.Encode())
-	resp, err := c.do(ctx, "GET", url, nil)
+	endpoint := fmt.Sprintf("/rest/api/3/workflowscheme/project?%s", params.Encode())
+	resp, err := c.do(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			c.Logger.Error("failed to close body", "error", err)
+		}
+	}()
 	c.logSuccessOrWarn("GetWorkflowSchemeProjectAssociations", resp, err)
 
 	if resp.StatusCode != http.StatusOK {

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -115,7 +114,7 @@ func (c *PluginConfig) Validate() error {
 	return nil
 }
 
-// TrackedFileInfo holds information about a tracked file and its attestation
+// JiraPlugin implements the Jira integration plugin, managing configuration and the Jira HTTP client.
 type JiraPlugin struct {
 	Logger hclog.Logger
 
@@ -144,7 +143,7 @@ func (l *JiraPlugin) Configure(req *proto.ConfigureRequest) (*proto.ConfigureRes
 		l.Logger.Error("Error decoding config", "error", err)
 		return nil, err
 	}
-	l.Logger.Debug("configuration decoded", "config", config)
+	l.Logger.Debug("configuration decoded", "baseURL", config.BaseURL, "authType", config.AuthType)
 
 	if err := config.Validate(); err != nil {
 		l.Logger.Error("Error validating config", "error", err)
@@ -178,17 +177,15 @@ func (l *JiraPlugin) Eval(req *proto.EvalRequest, apiHelper runner.ApiHelper) (*
 	}
 
 	jiraData, err := l.collectData(ctx, client)
-	jiraJSON, _ := json.MarshalIndent(jiraData, "", "  ")
-	converted := jiraData.ToProjectCentric()
-	indentedJSON, _ := json.MarshalIndent(converted, "", "  ")
-	os.WriteFile("/data/project_data.json", indentedJSON, 0o644)
-	os.WriteFile("/data/jira_data.json", jiraJSON, 0o644)
 	if err != nil {
 		l.Logger.Error("Error collecting Jira data", "error", err)
 		return &proto.EvalResponse{
 			Status: proto.ExecutionStatus_FAILURE,
 		}, err
 	}
+
+	converted := jiraData.ToProjectCentric()
+	l.Logger.Debug("Collected Jira data", "projectCount", len(converted.Projects))
 
 	evidences, err := l.EvaluatePolicies(ctx, converted, req)
 	if err != nil {
@@ -197,7 +194,7 @@ func (l *JiraPlugin) Eval(req *proto.EvalRequest, apiHelper runner.ApiHelper) (*
 			Status: proto.ExecutionStatus_FAILURE,
 		}, err
 	}
-	l.Logger.Debug("calculated evidences", "evidences", evidences)
+	l.Logger.Debug("calculated evidences", "count", len(evidences))
 	if err := apiHelper.CreateEvidence(ctx, evidences); err != nil {
 		l.Logger.Error("Error creating evidence", "error", err)
 		return &proto.EvalResponse{
