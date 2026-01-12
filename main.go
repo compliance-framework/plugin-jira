@@ -308,6 +308,11 @@ func (l *JiraPlugin) collectData(ctx context.Context, client *jira.Client) (*jir
 		return nil, fmt.Errorf("failed to search issues: %w", err)
 	}
 	data.Issues = issues
+
+	// Enrich issues with field metadata (name, type, value)
+	jira.EnrichIssuesWithFieldMetadata(data.Issues, data.Fields)
+	l.Logger.Debug("Enriched issues with field metadata", "issueCount", len(data.Issues))
+
 	// 5. Fetch Details, Approvals, SLAs, DevInfo, and Deployments for each issue
 	for i, issue := range data.Issues {
 		l.Logger.Info("Fetching details for issue", "issue", issue.Key)

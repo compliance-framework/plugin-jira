@@ -718,13 +718,22 @@ type JiraSchema struct {
 }
 
 type JiraIssue struct {
-	Key         string                 `json:"key"`
-	Fields      map[string]interface{} `json:"fields"`
-	Changelog   *JiraChangelog         `json:"changelog"`
-	Approvals   []JiraApproval         `json:"approvals"`
-	SLAs        []JiraSLA              `json:"slas,omitempty"`
-	DevInfo     *JiraDevInfo           `json:"dev_info,omitempty"`
-	Deployments []JiraDeployment       `json:"deployments,omitempty"`
+	Key                string                 `json:"key"`
+	Fields             map[string]interface{} `json:"fields"`
+	FieldsWithMetadata []JiraIssueField       `json:"fields_with_metadata,omitempty"`
+	Changelog          *JiraChangelog         `json:"changelog"`
+	Approvals          []JiraApproval         `json:"approvals"`
+	SLAs               []JiraSLA              `json:"slas,omitempty"`
+	DevInfo            *JiraDevInfo           `json:"dev_info,omitempty"`
+	Deployments        []JiraDeployment       `json:"deployments,omitempty"`
+}
+
+type JiraIssueField struct {
+	ID     string      `json:"id"`
+	Name   string      `json:"name"`
+	Type   string      `json:"type,omitempty"`
+	Custom string      `json:"custom,omitempty"`
+	Value  interface{} `json:"value"`
 }
 
 // JiraChangelog represents the changelog object returned by Jira API
@@ -862,6 +871,37 @@ type JiraPermission struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Type        string `json:"type"`
+}
+
+// EnrichIssuesWithFieldMetadata enriches issues with field metadata from the fields collection
+func EnrichIssuesWithFieldMetadata(issues []JiraIssue, fields []JiraField) {
+	// Create a map of field ID to field metadata for quick lookup
+	fieldMap := make(map[string]JiraField)
+	for _, field := range fields {
+		fieldMap[field.ID] = field
+	}
+
+	// Enrich each issue
+	for i := range issues {
+		issue := &issues[i]
+		issue.FieldsWithMetadata = make([]JiraIssueField, 0, len(issue.Fields))
+
+		for fieldID, fieldValue := range issue.Fields {
+			issueField := JiraIssueField{
+				ID:    fieldID,
+				Value: fieldValue,
+			}
+
+			// Add metadata if available
+			if fieldMeta, exists := fieldMap[fieldID]; exists {
+				issueField.Name = fieldMeta.Name
+				issueField.Type = fieldMeta.Schema.Type
+				issueField.Custom = fieldMeta.Schema.Custom
+			}
+
+			issue.FieldsWithMetadata = append(issue.FieldsWithMetadata, issueField)
+		}
+	}
 }
 
 type JiraPermissionsResponse struct {

@@ -632,7 +632,7 @@ func (c *Client) SearchChangeRequests(ctx context.Context, projectKeys []string,
 		query := url.Values{}
 		query.Set("jql", jql)
 		query.Set("expand", "changelog")
-		query.Set("fields", "project,issuetype,status,summary,description,reporter,assignee,priority,created,updated,duedate,environment,approvals")
+		query.Set("fields", "*all")
 		query.Set("startAt", fmt.Sprintf("%d", startAt))
 		query.Set("maxResults", fmt.Sprintf("%d", maxResults))
 
