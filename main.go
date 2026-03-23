@@ -162,6 +162,19 @@ func (l *JiraPlugin) Configure(req *proto.ConfigureRequest) (*proto.ConfigureRes
 	return &proto.ConfigureResponse{}, nil
 }
 
+func (l *JiraPlugin) getRiskTemplates(ctx context.Context, policyPath string) (map[string][]*proto.RiskTemplate, error) {
+
+	pm := policyManager.New(ctx, l.Logger, policyPath)
+	templates, err := pm.GetRiskTemplates(ctx)
+
+	if err != nil {
+		l.Logger.Error("Failed to get risk templates", "error", err)
+		return nil, err
+	}
+
+	return templates, nil
+}
+
 func (l *JiraPlugin) Init(req *proto.InitRequest, apiHelper runner.ApiHelper) (*proto.InitResponse, error) {
 	ctx := context.Background()
 
@@ -191,10 +204,18 @@ func (l *JiraPlugin) Init(req *proto.InitRequest, apiHelper runner.ApiHelper) (*
 		l.Logger.Error("Error upserting subject templates", "error", err)
 		return nil, err
 	}
-
-	if err := apiHelper.UpsertRiskTemplates(ctx, "plugin-jira", []*proto.RiskTemplate{}); err != nil {
-		l.Logger.Error("Error upserting risk templates", "error", err)
-		return nil, err
+	for _, path := range req.PolicyPaths {
+		temps, err := l.getRiskTemplates(ctx, path)
+		if err != nil {
+			l.Logger.Error("Error getting risk template for policy path", "path", path, "error", err)
+			// continue with remaining risk template creation - might be something wrong with one policy only
+		}
+		for packageName, templates := range temps {
+			if err := apiHelper.UpsertRiskTemplates(ctx, packageName, templates); err != nil {
+				l.Logger.Error("Error upserting risk templates", "package", packageName, "error", err)
+				// continue with remaining risk template creation - might be something wrong with one policy only
+			}
+		}
 	}
 
 	return &proto.InitResponse{}, nil
