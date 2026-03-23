@@ -209,11 +209,13 @@ func (l *JiraPlugin) Init(req *proto.InitRequest, apiHelper runner.ApiHelper) (*
 		if err != nil {
 			l.Logger.Error("Error getting risk template for policy path", "path", path, "error", err)
 			// continue with remaining risk template creation - might be something wrong with one policy only
+			continue
 		}
 		for packageName, templates := range temps {
 			if err := apiHelper.UpsertRiskTemplates(ctx, packageName, templates); err != nil {
 				l.Logger.Error("Error upserting risk templates", "package", packageName, "error", err)
-				// continue with remaining risk template creation - might be something wrong with one policy only
+				// continue with remaining risk template creation - might be something wrong with one risk Template only
+				continue
 			}
 		}
 	}
