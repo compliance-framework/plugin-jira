@@ -162,6 +162,34 @@ func (l *JiraPlugin) Configure(req *proto.ConfigureRequest) (*proto.ConfigureRes
 	return &proto.ConfigureResponse{}, nil
 }
 
+func (l *JiraPlugin) Init(req *proto.InitRequest, apiHelper runner.ApiHelper) (*proto.InitResponse, error) {
+	ctx := context.Background()
+
+	subjectTemplates := []*proto.SubjectTemplate{
+		{
+			Name:                "jira-project",
+			Type:                proto.SubjectType_SUBJECT_TYPE_COMPONENT,
+			TitleTemplate:       "Jira Project: {{ .project_key }}",
+			DescriptionTemplate: "Jira project {{ .project_name }} ({{ .project_key }})",
+			PurposeTemplate:     "Represents a Jira project being monitored for compliance",
+			IdentityLabelKeys:   []string{"project_key", "_plugin"},
+			SelectorLabels: []*proto.SubjectLabelSelector{
+				{Key: "_plugin", Value: "jira"},
+			},
+			LabelSchema: []*proto.SubjectLabelSchema{
+				{Key: "project_key", Description: "The unique key identifying the Jira project (e.g. MYPROJ)"},
+				{Key: "project_name", Description: "The display name of the Jira project"},
+				{Key: "project_id", Description: "The internal numeric ID of the Jira project"},
+				{Key: "project_category", Description: "The category assigned to the Jira project, if any"},
+				{Key: "jira_url", Description: "The base URL of the Jira instance"},
+				{Key: "_plugin", Description: "The plugin identifier"},
+			},
+		},
+	}
+
+	return runner.InitWithSubjectsAndRisksFromPolicies(ctx, l.Logger, req, apiHelper, subjectTemplates)
+}
+
 func (l *JiraPlugin) Eval(req *proto.EvalRequest, apiHelper runner.ApiHelper) (*proto.EvalResponse, error) {
 	ctx := context.Background()
 
@@ -482,7 +510,7 @@ func main() {
 	goplugin.Serve(&goplugin.ServeConfig{
 		HandshakeConfig: runner.HandshakeConfig,
 		Plugins: map[string]goplugin.Plugin{
-			"runner": &runner.RunnerGRPCPlugin{
+			"runner": &runner.RunnerV2GRPCPlugin{
 				Impl: jiraPlugin,
 			},
 		},
