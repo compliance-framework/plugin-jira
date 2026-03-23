@@ -3,7 +3,7 @@ module github.com/compliance-framework/plugin-jira
 go 1.25.8
 
 require (
-	github.com/compliance-framework/agent v0.3.0
+	github.com/compliance-framework/agent v0.3.1
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.7.0
 	github.com/mitchellh/mapstructure v1.5.0
@@ -58,7 +58,7 @@ require (
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/tools v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
-	google.golang.org/grpc v1.79.2 // indirect
+	google.golang.org/grpc v1.79.3 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
