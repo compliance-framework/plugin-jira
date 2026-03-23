@@ -472,24 +472,37 @@ func (l *JiraPlugin) EvaluatePolicies(ctx context.Context, data *jira.ProjectCen
 		},
 	}
 
-	labels := map[string]string{}
-	maps.Copy(labels, l.parsedConfig.PolicyLabels)
-	labels["provider"] = "jira"
+	baseLabels := map[string]string{}
+	maps.Copy(baseLabels, l.parsedConfig.PolicyLabels)
+	baseLabels["provider"] = "jira"
 
-	for _, policyPath := range req.GetPolicyPaths() {
-		processor := policyManager.NewPolicyProcessor(
-			l.Logger,
-			labels,
-			subjects,
-			components,
-			inventory,
-			actors,
-			activities,
-		)
-		evidence, err := processor.GenerateResults(ctx, policyPath, data)
-		evidences = slices.Concat(evidences, evidence)
-		if err != nil {
-			accumulatedErrors = errors.Join(accumulatedErrors, err)
+	for _, project := range data.Projects {
+		labels := maps.Clone(baseLabels)
+		labels["project_key"] = project.Project.Key
+		labels["project_name"] = project.Project.Name
+		labels["jira_url"] = l.parsedConfig.BaseURL
+
+		projectData := &jira.ProjectCentricData{
+			Projects:          []jira.ProjectData{project},
+			GlobalPermissions: data.GlobalPermissions,
+			AuditRecords:      data.AuditRecords,
+		}
+
+		for _, policyPath := range req.GetPolicyPaths() {
+			processor := policyManager.NewPolicyProcessor(
+				l.Logger,
+				labels,
+				subjects,
+				components,
+				inventory,
+				actors,
+				activities,
+			)
+			evidence, err := processor.GenerateResults(ctx, policyPath, projectData)
+			evidences = slices.Concat(evidences, evidence)
+			if err != nil {
+				accumulatedErrors = errors.Join(accumulatedErrors, err)
+			}
 		}
 	}
 
