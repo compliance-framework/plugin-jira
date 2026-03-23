@@ -482,6 +482,12 @@ func (l *JiraPlugin) EvaluatePolicies(ctx context.Context, data *jira.ProjectCen
 		labels["project_name"] = project.Project.Name
 		labels["jira_url"] = l.parsedConfig.BaseURL
 
+		projectData := &jira.ProjectCentricData{
+			Projects:          []jira.ProjectData{project},
+			GlobalPermissions: data.GlobalPermissions,
+			AuditRecords:      data.AuditRecords,
+		}
+
 		for _, policyPath := range req.GetPolicyPaths() {
 			processor := policyManager.NewPolicyProcessor(
 				l.Logger,
@@ -492,7 +498,7 @@ func (l *JiraPlugin) EvaluatePolicies(ctx context.Context, data *jira.ProjectCen
 				actors,
 				activities,
 			)
-			evidence, err := processor.GenerateResults(ctx, policyPath, project)
+			evidence, err := processor.GenerateResults(ctx, policyPath, projectData)
 			evidences = slices.Concat(evidences, evidence)
 			if err != nil {
 				accumulatedErrors = errors.Join(accumulatedErrors, err)
