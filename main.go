@@ -172,17 +172,15 @@ func (l *JiraPlugin) Init(req *proto.InitRequest, apiHelper runner.ApiHelper) (*
 			TitleTemplate:       "Jira Project: {{ .project_key }}",
 			DescriptionTemplate: "Jira project {{ .project_name }} ({{ .project_key }})",
 			PurposeTemplate:     "Represents a Jira project being monitored for compliance",
-			IdentityLabelKeys:   []string{"project_key", "_plugin"},
-			SelectorLabels: []*proto.SubjectLabelSelector{
-				{Key: "_plugin", Value: "jira"},
-			},
+			IdentityLabelKeys:   []string{"project_key"},
+			// No extra labels except for the _plugin - added through the agent runner
+			SelectorLabels: []*proto.SubjectLabelSelector{},
 			LabelSchema: []*proto.SubjectLabelSchema{
 				{Key: "project_key", Description: "The unique key identifying the Jira project (e.g. MYPROJ)"},
 				{Key: "project_name", Description: "The display name of the Jira project"},
 				{Key: "project_id", Description: "The internal numeric ID of the Jira project"},
 				{Key: "project_category", Description: "The category assigned to the Jira project, if any"},
 				{Key: "jira_url", Description: "The base URL of the Jira instance"},
-				{Key: "_plugin", Description: "The plugin identifier"},
 			},
 		},
 	}
