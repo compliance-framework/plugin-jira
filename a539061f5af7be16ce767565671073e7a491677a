@@ -1,3 +1,6 @@
 lisa-selfreview:
 pass 1 (ccf-review packs core,go,go-plugin): approve, no findings. All callers pin compliance-framework/workflows @6e7fc9c0 (v1.5.2) and set top-level permissions; release.yml/cut-prerelease.yml callers have no own concurrency group, matching mock-plugin-1 and the reviewed plugin-github-repositories#26 (cut-prerelease.yml sets its own; release-please keeps cancel-in-progress off on purpose).
 Local gate: actionlint v1.7.12 clean; go build ./... and go test ./... pass; goreleaser check OK; goreleaser release --snapshot --clean (local v2.16.0) gives the same five archive names as the v0.2.2 release, each with LICENSE, README.md, plugin.
+
+lisa-design:
+Manifest seeded at 0.2.2: releases/latest is v0.2.2 (final, tag vX.Y.Z), and v0.2.2 is an ancestor of main (f858554). No bootstrap-sha needed. README does not describe releasing, so it is unchanged. ci.yml already pinned v1.5.2 with release-checks; unchanged.
