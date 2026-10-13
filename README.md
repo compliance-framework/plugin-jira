@@ -61,6 +61,21 @@ The plugin is configured via the `PluginConfig` structure:
 | `project_keys` | Comma-separated list of Project Keys to monitor |
 | `policy_labels` | JSON map of labels to attach to generated evidence |
 
+### Policy data
+
+Any `policy_data` set on this plugin's block in the agent configuration is passed
+to every policy evaluation and is available to Rego as `data.<key>`. Which keys
+are read depends on the policy bundle; for example:
+
+```yaml
+plugins:
+  jira:
+    # ...source, policies and config as usual...
+    policy_data:
+      approver_groups:
+        - change-advisory-board
+```
+
 ## Usage
 
 The plugin implements the `Runner` interface and is executed by the compliance agent.

@@ -120,6 +120,7 @@ type JiraPlugin struct {
 
 	config       *PluginConfig
 	parsedConfig *ParsedConfig
+	policyData   map[string]interface{}
 	client       *http.Client
 }
 
@@ -158,6 +159,12 @@ func (l *JiraPlugin) Configure(req *proto.ConfigureRequest) (*proto.ConfigureRes
 		return nil, err
 	}
 	l.parsedConfig = parsed
+
+	if policyData := req.GetPolicyData(); policyData != nil {
+		l.policyData = policyData.AsMap()
+	} else {
+		l.policyData = nil
+	}
 
 	return &proto.ConfigureResponse{}, nil
 }
@@ -495,6 +502,7 @@ func (l *JiraPlugin) EvaluatePolicies(ctx context.Context, data *jira.ProjectCen
 				inventory,
 				actors,
 				activities,
+				l.policyData,
 			)
 			evidence, err := processor.GenerateResults(ctx, policyPath, projectData)
 			evidences = slices.Concat(evidences, evidence)
