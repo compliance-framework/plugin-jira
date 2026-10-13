@@ -64,15 +64,16 @@ The plugin is configured via the `PluginConfig` structure:
 ### Policy data
 
 Any `policy_data` set on this plugin's block in the agent configuration is passed
-to every policy evaluation and is available to Rego as `data.<key>`:
+to every policy evaluation and is available to Rego as `data.<key>`. Which keys
+are read depends on the policy bundle; for example:
 
 ```yaml
 plugins:
   jira:
     # ...source, policies and config as usual...
     policy_data:
-      change_request_issue_types:
-        - Change Request
+      approver_groups:
+        - change-advisory-board
 ```
 
 ## Usage
