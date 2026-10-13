@@ -2,3 +2,6 @@ lisa-design:
 - Configure keeps req.GetPolicyData().AsMap() on the plugin (nil when unset, so a reconfigure without policy_data clears it) and passes it to every NewPolicyProcessor call; InitRequest carries no policy_data, so Init is unchanged (user decision 2026-10-13, model plugin-file-attestation#7).
 - Init (subject template jira-project) and RunnerV2GRPCPlugin serving are kept as is.
 - go directive rises 1.25.8 -> 1.26.1 because agent v0.9.1 declares go 1.26.1.
+
+lisa-selfreview:
+pass 1 (strict): CORE-DOC-001 should-fix README.md "Policy data" example used `change_request_issue_types`, which is also a plugin config key, so readers could think the plugin setting moves to policy_data. Fix: use a neutral key and say keys depend on the policy bundle.
