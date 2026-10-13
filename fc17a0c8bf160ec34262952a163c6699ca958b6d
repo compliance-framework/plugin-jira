@@ -1,0 +1,2 @@
+lisa-addressed:
+- README "Policy data" example now uses a neutral `approver_groups` key and says the keys depend on the policy bundle (self-review pass 1, CORE-DOC-001).
