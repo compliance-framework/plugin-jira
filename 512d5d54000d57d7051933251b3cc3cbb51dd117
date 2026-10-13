@@ -1,0 +1,4 @@
+lisa-design:
+- ci.yml is mock-plugin-1's caller as is (header comment dropped), with all three `uses:` pinned to workflows v1.5.2 (6e7fc9c0); push trigger stays on main (the default branch).
+- push.yml/test.yml deleted (only push.yml called test.yml); release.yml and build-and-upload.yml untouched (W3 replaces them).
+- .goreleaser.yaml archives.format -> formats: [tar.gz]; snapshot release archives are identical before and after (same 5 names, each LICENSE/README.md/plugin).
