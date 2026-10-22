@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/compliance-framework/plugin-jira/compare/v0.2.3...v0.2.4) (2026-10-22)
+
+
+### Bug Fixes
+
+* **deps:** update all non-major dependencies ([#23](https://github.com/compliance-framework/plugin-jira/issues/23)) ([a1b2f39](https://github.com/compliance-framework/plugin-jira/commit/a1b2f39714147d0df00aeef94c3ba2d7e3b82275))
+
 ## [0.2.3](https://github.com/compliance-framework/plugin-jira/compare/v0.2.2...v0.2.3) (2026-10-14)
 
 
