@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/compliance-framework/plugin-jira/compare/v0.2.4...v0.2.5) (2026-10-29)
+
+
+### Bug Fixes
+
+* **deps:** build with the go1.26.10 toolchain so Renovate can ship Go security fixes ([#27](https://github.com/compliance-framework/plugin-jira/issues/27)) ([ea14398](https://github.com/compliance-framework/plugin-jira/commit/ea1439813b2a60962049a2b66a6349a96cc99d67))
+
 ## [0.2.4](https://github.com/compliance-framework/plugin-jira/compare/v0.2.3...v0.2.4) (2026-10-28)
 
 
