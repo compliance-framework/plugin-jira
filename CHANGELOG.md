@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6](https://github.com/compliance-framework/plugin-jira/compare/v0.2.5...v0.2.6) (2026-11-11)
+
+
+### Bug Fixes
+
+* **deps:** update security fixes (gomod) [security] ([#32](https://github.com/compliance-framework/plugin-jira/issues/32)) ([1698c04](https://github.com/compliance-framework/plugin-jira/commit/1698c0415067751a36fa019b2c6ae8e1f561f09e))
+
 ## [0.2.5](https://github.com/compliance-framework/plugin-jira/compare/v0.2.4...v0.2.5) (2026-11-02)
 
 
